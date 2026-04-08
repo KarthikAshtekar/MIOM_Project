@@ -1,0 +1,296 @@
+MIOM Project Pipeline Detailed Report
+
+Notebook reviewed:
+`notebooks/MIOM_standardized.ipynb`
+
+Project goal:
+The notebook implements a full preprocessing and anomaly-detection pipeline for the SECOM semiconductor dataset. The workflow moves in a strict sequence from data loading to missing-value analysis, preprocessing, scaling, PCA, clustering, anomaly detection, and time-based evaluation.
+
+1. Project setup and imports
+
+The notebook begins by importing the libraries needed for the pipeline:
+- `os`, `zipfile`, and `pathlib.Path` for file and directory handling
+- `numpy` and `pandas` for numerical and tabular data manipulation
+- `matplotlib.pyplot` and `seaborn` for visualization
+- `StandardScaler` for feature scaling
+- `PCA` for dimensionality reduction
+- `KMeans`, `DBSCAN`, `silhouette_score`, and `NearestNeighbors` for clustering and anomaly detection
+
+It then defines the project root dynamically by searching upward from the current working directory until it finds the `data` directory. This makes the notebook more portable because it can be run from different locations without hard-coded absolute paths.
+
+The notebook creates the following working folders if they do not already exist:
+- `data/processed`
+- `data/secom_temp`
+
+The plotting style is also configured at this stage:
+- `plt.style.use('seaborn-v0_8')`
+- `sns.set_palette("husl")`
+- `%matplotlib inline`
+
+2. Data loading and extraction
+
+The first major pipeline step is the `load_and_extract_data()` function.
+
+What it does:
+- Locates the compressed dataset at `data/raw/secom.zip`
+- Extracts the archive into `data/secom_temp`
+- Reads the extracted `secom.data` file with whitespace separation
+- Assigns generic feature names as `feature_0`, `feature_1`, and so on
+
+This stage converts the raw SECOM text data into a usable `pandas.DataFrame`.
+
+Observed result:
+- Raw dataframe shape: `(1567, 590)`
+
+Interpretation:
+- The dataset contains 1,567 records
+- Each record has 590 sensor features
+- The notebook preserves every row and initially loads the data without filtering
+
+3. Exploratory data analysis for missing values
+
+The next step is `plot_missing_analysis(df)`, which focuses on missing-data structure rather than domain labels.
+
+It generates three complementary views:
+- Top columns by missing-value ratio
+- Histogram of missing-value ratio per row
+- A heatmap of missingness for a random sample of up to 500 rows
+
+Why this matters:
+- The SECOM dataset is known for heavy missingness in some features
+- The EDA step helps identify whether missingness is concentrated in certain columns or spread across rows
+- The visualization guides the later preprocessing decisions
+
+This step does not modify the dataset. It only helps assess the quality and structure of the input data.
+
+4. Preprocessing
+
+The core cleaning logic is implemented in `preprocess_data(df, missing_threshold=0.5)`.
+
+This function performs the following operations in order:
+- Computes the missing ratio for every column
+- Keeps only columns whose missing ratio is below 0.5
+- Creates missing-indicator columns for the retained features
+- Imputes missing values in the retained features using the median
+- Concatenates the imputed numeric features with the binary missing indicators
+- Drops constant columns that contain only one unique value
+- Saves both the imputed and indicated datasets to disk
+
+Files written in this step:
+- `data/processed/Cleaned_data.csv`
+- `data/processed/Cleaned_data_Indicated.csv`
+
+Observed result:
+- Processed dataframe shape: `(1567, 956)`
+
+Interpretation:
+- The dataset keeps the same number of samples
+- The feature space expands after adding missing indicators
+- The notebook keeps both the cleaned numeric data and the indicator-augmented version for later stages
+
+This is an important design choice because the missingness itself may carry useful signal for anomaly detection.
+
+5. Scaling and PCA
+
+The next stage is `apply_scaling_pca(df, n_components=200)`.
+
+This step is split into three sub-operations:
+
+5.1 Feature scaling
+- The function separates the original numeric features from the `_missing` indicator columns
+- It applies `StandardScaler` only to the original features
+- Missing-indicator columns are kept as-is so they remain binary
+
+5.2 Saving the scaled dataset
+- The scaled-and-combined dataframe is saved to `data/processed/Final_Scaled_data_Indicated.csv`
+
+5.3 PCA transformation
+- PCA is applied to the scaled dataframe
+- The number of components is capped by the smaller of:
+  - the requested component count
+  - the number of rows
+  - the number of columns
+- The resulting PCA dataframe is saved twice:
+  - `data/processed/secom_pca_ready.csv`
+  - `data/processed/secom_pca_scaled.csv`
+
+The notebook also plots cumulative explained variance so the reduction quality can be judged visually.
+
+Observed result:
+- 200 principal components retain 97.9 percent of the variance
+
+Interpretation:
+- The PCA stage compresses the high-dimensional sensor space while preserving almost all of the variance
+- This makes later clustering more stable and computationally manageable
+
+6. Clustering and anomaly detection
+
+The `cluster_and_detect(df_pca)` function performs model selection and anomaly detection in a structured sequence.
+
+6.1 KMeans model selection
+- The notebook evaluates KMeans for cluster counts from 2 to 9
+- It computes silhouette scores for each value of `k`
+- It also computes inertia values for cluster counts from 1 to 14 to support the elbow method
+
+Purpose:
+- Silhouette scores help judge cluster separation
+- The elbow curve helps identify a sensible `k`
+
+6.2 Final KMeans clustering
+- The notebook selects `k=2`
+- KMeans is then fitted on the PCA space
+- Cluster assignments are stored in a new `cluster` column
+
+6.3 DBSCAN tuning
+- A nearest-neighbor distance plot is created using the 10th nearest neighbor
+- DBSCAN is then run with:
+  - `eps=16`
+  - `min_samples=10`
+- DBSCAN labels are stored in `dbscan_label`
+
+6.4 Result assembly
+- The PCA features, KMeans labels, and DBSCAN labels are combined into one results dataframe
+- The notebook prints the final cluster distributions
+
+Observed KMeans result:
+- Cluster 1: 1,563 samples
+- Cluster 0: 4 samples
+
+Observed DBSCAN result:
+- Label 0: 1,227 samples
+- Label -1: 340 samples
+
+Interpretation:
+- KMeans produces one very small cluster, which suggests a small subset of unusual points under that partitioning
+- DBSCAN identifies 340 points as noise/anomalies
+- The anomaly set is much larger under DBSCAN than under KMeans, which is consistent with DBSCAN's density-based detection behavior
+
+The function also produces several plots:
+- Silhouette curve
+- Elbow curve
+- k-distance plot
+- KMeans scatter plot
+- KMeans anomaly scatter plot
+- DBSCAN anomaly scatter plot
+
+7. Time-series analysis and evaluation
+
+The `time_analysis(df_results, df_processed)` function adds the temporal dimension and evaluates how well anomalies relate to failure labels.
+
+7.1 Label loading
+- The notebook searches for label files in multiple locations
+- It prefers:
+  - `data/raw/secom_labels.csv`
+  - `data/secom_temp/secom_labels.data`
+  - project-root `secom_labels.csv`
+
+Observed label file:
+- `secom_labels.csv`
+
+Label data shape:
+- `(1567, 2)`
+
+Label columns:
+- `label`
+- `date`
+
+Observed label distribution:
+- `-1`: 1,463 rows
+- `1`: 104 rows
+
+7.2 Timestamp processing
+- The label date column is converted to datetime
+- The labels are merged with the clustering results in row order
+- The merged dataframe is sorted by timestamp
+
+7.3 Temporal feature creation
+The notebook creates:
+- `is_anomaly` from DBSCAN labels
+- `is_failure` from true labels
+- `hour`
+- `day_of_week`
+- `month`
+
+7.4 Time-based plots
+The notebook generates:
+- cluster assignments over time
+- DBSCAN labels over time
+- daily anomaly counts
+- failure rate by hour
+- anomaly rate by hour
+- anomaly rate by day of week
+- anomaly rate by month
+
+7.5 Predictive evaluation
+The notebook defines:
+- `future_failure` as the next row's failure flag
+
+It then computes two simple directional metrics:
+- Precision: probability of next failure given an anomaly
+- Recall: probability of anomaly given a next failure
+
+Observed evaluation:
+- Precision (next failure | anomaly): 0.914
+- Recall (anomaly | next failure): 0.212
+
+Interpretation:
+- When DBSCAN flags an anomaly, the next record is often a failure
+- However, the anomaly detector does not catch every failure event
+- The model is therefore precise but not highly sensitive
+
+7.6 Feature difference analysis
+- The notebook compares numeric feature means between anomalies and normal points
+- It reports the top 10 features with the largest absolute mean difference
+
+Top differing features reported:
+- `feature_162`
+- `feature_159`
+- `feature_23`
+- `feature_24`
+- `feature_297`
+- `feature_161`
+- `feature_160`
+- `feature_21`
+- `feature_204`
+- `feature_294`
+
+Interpretation:
+- These features appear to contribute strongly to the separation between anomalous and normal behavior
+- They are candidate variables for deeper diagnostic analysis or downstream modeling
+
+8. Final summary in the notebook
+
+The notebook ends with a short summary stating that:
+- Processed data has been saved to `data/processed/`
+- DBSCAN with `eps=16` identifies anomalies that are predictive of future failures
+- The pipeline is ready for modeling
+
+It also leaves two empty code cells at the end, which do not add new processing logic.
+
+9. Files created by the pipeline
+
+The notebook writes the following processed artifacts:
+- `data/processed/Cleaned_data.csv`
+- `data/processed/Cleaned_data_Indicated.csv`
+- `data/processed/Final_Scaled_data_Indicated.csv`
+- `data/processed/secom_pca_ready.csv`
+- `data/processed/secom_pca_scaled.csv`
+
+Supporting input files used by the pipeline include:
+- `data/raw/secom.zip`
+- `data/raw/secom_names.csv`
+- `secom_labels.csv`
+
+10. Overall pipeline conclusion
+
+This notebook implements a complete, sequential SECOM analysis workflow:
+- load raw sensor data from the ZIP archive
+- explore missingness patterns
+- clean and impute the dataset
+- add missingness indicators
+- scale the features
+- reduce dimensionality with PCA
+- detect anomalies with KMeans and DBSCAN
+- evaluate anomaly timing against failure labels
+
+The strongest reported result is that DBSCAN anomalies have high precision for predicting the next failure event, which suggests the pipeline is useful for early warning and fault-monitoring tasks.
