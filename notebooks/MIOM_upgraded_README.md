@@ -141,7 +141,6 @@ The later sections build stakeholder-facing visuals such as:
 - yield trends
 - Pareto sensor ranking
 - threshold comparison
-- Hotelling `T²` style comparison
 - executive dashboard
 
 These are all saved under:
